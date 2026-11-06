@@ -1,0 +1,6 @@
+{
+  "name": "kimi-swarm-managed-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "dependencies": { "@moonshot-ai/kimi-code": "2.4.1" }
+}
