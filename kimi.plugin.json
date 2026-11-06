@@ -1,0 +1,12 @@
+{
+  "name": "kimi-swarm",
+  "version": "0.1.0",
+  "description": "Swarm effort: Max thinking with proactive native subagents",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/Alpaca233114514/kimi-swarm",
+  "systemPromptPath": "./SYSTEM.md",
+  "interface": {
+    "displayName": "Kimi Swarm",
+    "shortDescription": "Swarm 思考档位 · 主动使用原生子代理"
+  }
+}
