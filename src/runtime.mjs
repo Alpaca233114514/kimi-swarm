@@ -2,7 +2,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-export const SWARM_DESCRIPTION = 'Max thinking with proactive native subagents';
+export const SWARM_DESCRIPTION = 'Persistent Max thinking; native AgentSwarm required';
 export const SWARM_COLORS = Object.freeze({ light: '#4941cf', dark: '#a5a0ff' });
 const selecting = new WeakSet();
 
@@ -100,14 +100,13 @@ export async function swarmSwitch(host, alias, effort, persist, nativeSwitch, ef
   let transitionStarted = false;
   let committed = false;
   try {
-    requireIdle(host);
     const enabled = await swarmEnabled(host);
-    requireIdle(host);
     if (effort !== 'swarm' && (!enabled || !host.state.appState.swarmMode)) {
       const ok = await nativeSwitch(host, alias, effort, persist);
-      if (ok && enabled && persist !== 'session') await savePreference(false, alias);
+      if (ok) await savePreference(false, alias);
       return ok;
     }
+    requireIdle(host);
     if (effort === 'swarm') {
       if (!enabled) throw new Error('Enable the kimi-swarm plugin before selecting Swarm.');
       const model = host.state.appState.availableModels[alias];
@@ -136,16 +135,15 @@ export async function swarmSwitch(host, alias, effort, persist, nativeSwitch, ef
     }
     committed = true;
     sync(host, session, after);
-    let savedSwarm = false;
+    // 独立记住 Swarm，不受宿主 Max 默认值上限影响。 / Persist Swarm independently of native Max defaults.
+    await savePreference(effort === 'swarm', alias);
     if (persist !== 'session') {
       // 复用宿主保存默认值，保留其错误处理。 / Reuse native default persistence and its errors.
       if (!(await nativeSwitch(host, alias, realEffort, 'model-and-effort'))) return false;
-      const config = await host.harness.getConfig({ reload: true });
-      savedSwarm = effort === 'swarm' && config.thinking?.effort === 'max';
-      await savePreference(savedSwarm, alias);
     }
-    const sessionOnly = persist === 'session' || (effort === 'swarm' && !savedSwarm);
-    host.showStatus(`Thinking set to ${effort}${sessionOnly ? ' for this session only' : ''}.`, 'success');
+    host.showStatus(effort === 'swarm'
+      ? 'Thinking set to swarm. New sessions will use Swarm until you select another effort.'
+      : `Thinking set to ${effort}. Swarm default cleared.`, 'success');
     return true;
   } catch (error) {
     let detail = error.message;
@@ -166,11 +164,35 @@ export async function swarmSwitch(host, alias, effort, persist, nativeSwitch, ef
   }
 }
 
-export async function swarmDefaultForNewSession(harness, session) {
+function supportsMax(config, alias, effectiveModel) {
+  const model = config.models?.[alias];
+  return !!model && effectiveModel(model, config.providers?.[model.provider]?.type ?? model.protocol)
+    .supportEfforts?.includes('max') === true;
+}
+
+export async function swarmLazyDefaults(host, config, effectiveModel = model => model) {
+  if (host.session !== undefined) return;
+  const pref = await readPreference();
+  if (!pref.enabled || !(await swarmEnabled(host))) return;
+  if (supportsMax(config, host.state.appState.model, effectiveModel)) {
+    host.setAppState({ thinkingEffort: 'max', swarmMode: true, lazySessionThinking: 'max' });
+  }
+}
+
+export async function swarmDefaultForNewSession(harness, session, effectiveModel = model => model) {
   const pref = await readPreference();
   if (!pref.enabled || !(await swarmEnabled(harness))) return;
   const status = await session.getStatus();
-  if (status.model === pref.model && status.thinkingEffort === 'max') {
+  const config = await harness.getConfig();
+  if (!supportsMax(config, status.model, effectiveModel)) return;
+  try {
+    await session.setThinking('max');
+    if ((await session.getStatus()).thinkingEffort !== 'max') throw new Error('The host did not accept Max.');
     await session.setSwarmMode(true, 'manual');
+    if ((await session.getStatus()).swarmMode !== true) throw new Error('The host did not enable native Swarm.');
+  } catch (error) {
+    try { await rollback(session, status); }
+    catch (restoreError) { throw new Error(`Swarm default failed: ${error.message}. Rollback failed: ${restoreError.message}`); }
+    throw new Error(`Swarm default failed: ${error.message}`);
   }
 }

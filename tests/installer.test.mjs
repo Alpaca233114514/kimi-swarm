@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { updatePluginRegistry } from '../src/installer.mjs';
+import { updatePluginRegistry, validateRuntimeVersion } from '../src/installer.mjs';
 import { patchBundle } from '../src/patch-bundle.mjs';
 
 test('registration preserves unrelated plugins and metadata and returns the old entry', () => {
@@ -19,7 +19,13 @@ test('unknown registry formats and duplicate records are rejected', () => {
   assert.throws(() => updatePluginRegistry({ version: 1, plugins: [{ id: 'kimi-swarm' }, { id: 'kimi-swarm' }] }, {}), /Duplicate/);
 });
 
-test('unknown CLI versions and changed bundles are rejected before writing', () => {
-  assert.throws(() => patchBundle('anything', '2.5.1'), /Unsupported/);
+test('old versions and changed bundles are rejected before writing', () => {
+  assert.throws(() => patchBundle('anything', '2.3.0'), /Unsupported/);
   assert.throws(() => patchBundle('anything', '2.4.1'), /expected 1 anchors/);
+  assert.throws(() => patchBundle('anything', '2.5.2'), /expected 1 anchors/);
+});
+
+test('new stable versions are candidates but prereleases and old versions are rejected', () => {
+  for (const version of ['2.4.1', '2.5.2', '3.0.0']) assert.doesNotThrow(() => validateRuntimeVersion(version));
+  for (const version of ['2.4.0', '2.5.2-rc.1', 'unknown']) assert.throws(() => validateRuntimeVersion(version), /Unsupported/);
 });

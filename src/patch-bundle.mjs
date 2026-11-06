@@ -1,25 +1,36 @@
 export const SUPPORTED_KIMI_VERSION = '2.4.1';
+export const TESTED_KIMI_VERSIONS = ['2.4.1', '2.5.2'];
 export const UPSTREAM_COMMIT = '2c73f3f50af4fa7f2540ca0d2e33b07a1408e3a7';
-export const PATCH_MARKER = '// kimi-swarm bridge 0.1.0';
+export const PATCH_MARKER = '// kimi-swarm bridge 0.1.2';
+
+export function candidateVersion(version) {
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
+  if (!match) return false;
+  const [major, minor, patch] = match.slice(1).map(Number);
+  return major > 2 || major === 2 && (minor > 4 || minor === 4 && patch >= 1);
+}
 
 export function patchBundle(input, version) {
-  if (version !== SUPPORTED_KIMI_VERSION) throw new Error(`Unsupported Kimi version ${version}; supported: ${SUPPORTED_KIMI_VERSION}.`);
-  if (input.includes(PATCH_MARKER)) throw new Error('This bundle already contains kimi-swarm.');
+  if (!candidateVersion(version)) throw new Error(`Unsupported Kimi version ${version}; stable 2.4.1 or later is required.`);
+  if (input.includes('// kimi-swarm bridge ')) throw new Error('This bundle already contains kimi-swarm.');
   let source = input;
   const changes = [];
   function replace(name, from, to, expected = 1) {
-    const count = source.split(from).length - 1;
+    const pattern = new RegExp(from.split(/(\s+)/).map(part => /^\s+$/.test(part) ? '\\s+' : part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join(''), 'g');
+    const count = [...source.matchAll(pattern)].length;
     if (count !== expected) throw new Error(`Incompatible Kimi bundle: ${name} expected ${expected} anchors, found ${count}. No file was written.`);
-    source = source.split(from).join(to);
+    source = source.replace(pattern, () => to);
     changes.push({ name, count });
   }
 
-  replace('effort-switch',
-    'async function performModelSwitch(host, alias, effort, persist) {',
-    `async function performModelSwitch(host, alias, effort, persist) {
-  return swarmSwitch(host, alias, effort, persist, kimiSwarmNativeSwitch, effectiveModelForHost);
+  const switchSignature = source.includes('async function performModelSwitch(host, alias, effort, persist, options) {')
+    ? 'async function performModelSwitch(host, alias, effort, persist, options) {'
+    : 'async function performModelSwitch(host, alias, effort, persist) {';
+  replace('effort-switch', switchSignature,
+    `async function performModelSwitch(host, alias, effort, persist, options) {
+  return swarmSwitch(host, alias, effort, persist, (h, a, e, p) => kimiSwarmNativeSwitch(h, a, e, p, options), effectiveModelForHost);
 }
-async function kimiSwarmNativeSwitch(host, alias, effort, persist) {`);
+async function kimiSwarmNativeSwitch(host, alias, effort, persist, options) {`);
   replace('effort-options',
     'const segments = segmentsFor(effective);',
     'const segments = swarmEfforts(segmentsFor(effective), await swarmEnabled(host));');
@@ -48,6 +59,9 @@ async function kimiSwarmNativeSwitch(host, alias, effort, persist) {`);
   replace('model-tabs',
     'thinkingControl: opts.thinkingControl,',
     'thinkingControl: opts.thinkingControl,\n\t\tswarmEffort: opts.swarmEffort,');
+  replace('persistent-swarm-key-hint',
+    'if (this.opts.onSessionOnlySelect !== void 0) hintParts.push("Alt+S session-only");',
+    'if (this.opts.onSessionOnlySelect !== void 0) hintParts.push(this.opts.swarmEffort || this.opts.efforts?.includes("swarm") ? "Alt+S select" : "Alt+S session-only");', 2);
   replace('model-render',
     'const segments = segmentsFor(choice.model);',
     'const segments = swarmEfforts(segmentsFor(choice.model), this.opts.swarmEffort === true);', 2);
@@ -96,9 +110,19 @@ async function kimiSwarmNativeSwitch(host, alias, effort, persist) {`);
         version: state.version`);
   replace('new-session-default',
     'this.trackSessionEvent(session.id, "session_new");\n\t\t\treturn session;',
-    'this.trackSessionEvent(session.id, "session_new");\n\t\t\tawait swarmDefaultForNewSession(this, session);\n\t\t\treturn session;');
+    'this.trackSessionEvent(session.id, "session_new");\n\t\t\tawait swarmDefaultForNewSession(this, session, effectiveModelAlias);\n\t\t\treturn session;');
+  const hydrate = /^([\t ]*)async hydrateLazyConfigDefaults\(includeModel = true\) \{/gm;
+  const hydrateMatches = [...source.matchAll(hydrate)];
+  if (hydrateMatches.length !== 1) throw new Error('Incompatible Kimi bundle: missing unique lazy-default hook.');
+  const method = hydrateMatches[0];
+  const methodEnd = source.indexOf('\n' + method[1] + '}', method.index);
+  if (methodEnd < 0) throw new Error('Incompatible Kimi bundle: lazy-default method boundary changed.');
+  const methodBody = source.slice(method.index, methodEnd);
+  if (methodBody.split('this.setAppState(patch);').length !== 2) throw new Error('Incompatible Kimi bundle: lazy-default assignment changed.');
+  replace('lazy-session-default', methodBody,
+    methodBody.replace('this.setAppState(patch);', 'this.setAppState(patch);\nawait swarmLazyDefaults(this, config, effectiveModelAlias);'));
 
-  const bridgeImport = `${PATCH_MARKER}\nimport { swarmSwitch, swarmEnabled, swarmEfforts, swarmDisplayEffort, swarmDefaultForNewSession, swarmColor, swarmTintStatusLine, SWARM_DESCRIPTION } from './kimi-swarm-runtime.mjs';\n`;
+  const bridgeImport = `${PATCH_MARKER}\nimport { swarmSwitch, swarmEnabled, swarmEfforts, swarmDisplayEffort, swarmDefaultForNewSession, swarmLazyDefaults, swarmColor, swarmTintStatusLine, SWARM_DESCRIPTION } from './kimi-swarm-runtime.mjs';\n`;
   const start = source.startsWith('#!') ? source.indexOf('\n') + 1 : 0;
   source = source.slice(0, start) + bridgeImport + source.slice(start);
   return { source, changes };

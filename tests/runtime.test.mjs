@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { swarmEfforts, swarmDisplayEffort, swarmSwitch, swarmDefaultForNewSession } from '../src/runtime.mjs';
+import { swarmEfforts, swarmDisplayEffort, swarmSwitch, swarmDefaultForNewSession, swarmLazyDefaults } from '../src/runtime.mjs';
 
 await mkdir('.cache/tests', { recursive: true });
 process.env.KIMI_SWARM_STATE_DIR = await mkdtemp(resolve('.cache/tests/runtime-'));
@@ -22,7 +22,7 @@ function fixture({ enabled = true, max = true } = {}) {
       availableModels: { kimi: { supportEfforts: max ? ['high', 'max'] : ['high'] } } } },
     harness: {
       async listPlugins() { return [{ id: 'kimi-swarm', enabled, state: 'ok', hasErrors: false }]; },
-      async getConfig() { return { thinking: { effort: state.thinkingEffort } }; },
+      async getConfig() { return { models: host.state.appState.availableModels, thinking: { effort: state.thinkingEffort } }; },
     },
     async ensureSession() { return session; },
     setAppState(patch) { Object.assign(this.state.appState, patch); },
@@ -77,7 +77,7 @@ test('unsupported models and busy sessions have no mutations', async () => {
   assert.equal(await f.select('swarm'), false);
   assert.deepEqual(f.calls, []);
   f.host.state.appState.streamingPhase = 'running';
-  assert.equal(await f.select('max'), false);
+  assert.equal(await f.select('swarm'), false);
   assert.deepEqual(f.calls, []);
 });
 
@@ -118,30 +118,33 @@ test('an asynchronous session replacement prevents mutations', async () => {
   assert.match(f.errors[0], /Session changed/);
 });
 
-test('Enter persists native Max plus the virtual default; Alt+S does not overwrite it', async () => {
+test('Swarm is sticky even through Alt+S; choosing another effort clears it', async () => {
   const f = fixture();
-  assert.equal(await f.select('swarm', 'model'), true, f.errors.join('\n'));
+  assert.equal(await f.select('swarm', 'session'), true, f.errors.join('\n'));
   const file = join(process.env.KIMI_SWARM_STATE_DIR, 'preferences.json');
   assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), { version: 1, enabled: true, model: 'kimi' });
-  assert.equal(await f.select('high'), true);
-  assert.equal(JSON.parse(await readFile(file, 'utf8')).enabled, true);
-  f.state.thinkingEffort = 'max';
+  f.state.thinkingEffort = 'high';
+  f.state.swarmMode = false;
   await swarmDefaultForNewSession(f.host.harness, f.session);
   assert.equal(f.state.swarmMode, true);
-  assert.equal(await f.select('max', 'model'), true);
+  assert.equal(f.state.thinkingEffort, 'max');
+  assert.equal(await f.select('high', 'session'), true);
   assert.equal(JSON.parse(await readFile(file, 'utf8')).enabled, false);
+  await swarmDefaultForNewSession(f.host.harness, f.session);
+  assert.equal(f.state.swarmMode, false);
+  assert.equal(f.state.thinkingEffort, 'high');
 });
 
 test('ordinary native swarm at High is not mislabeled as Swarm effort', () => {
   assert.equal(swarmDisplayEffort({ thinkingEffort: 'high', swarmMode: true }), 'high');
 });
 
-test('native Max persistence ceiling is respected', async () => {
+test('Swarm persistence is independent of native Max persistence ceiling', async () => {
   const f = fixture();
   f.host.harness.getConfig = async () => ({ thinking: { enabled: true } });
   assert.equal(await f.select('swarm', 'model'), true);
   const pref = JSON.parse(await readFile(join(process.env.KIMI_SWARM_STATE_DIR, 'preferences.json'), 'utf8'));
-  assert.equal(pref.enabled, false);
+  assert.equal(pref.enabled, true);
   assert.equal(f.state.swarmMode, true);
 });
 
@@ -156,4 +159,47 @@ test('failed rollback is reported and the actual state is displayed', async () =
   assert.match(f.errors[0], /Rollback failed: rollback unavailable/);
   assert.equal(f.host.state.appState.thinkingEffort, 'max');
   assert.equal(f.host.state.appState.swarmMode, false);
+});
+
+test('a compatible different model inherits Swarm without changing the chosen model', async () => {
+  const f = fixture();
+  await f.select('swarm');
+  f.state.model = 'another';
+  f.state.thinkingEffort = 'high';
+  f.state.swarmMode = false;
+  f.host.state.appState.availableModels.another = { supportEfforts: ['high', 'max'] };
+  await swarmDefaultForNewSession(f.host.harness, f.session);
+  assert.equal(f.state.model, 'another');
+  assert.equal(f.state.thinkingEffort, 'max');
+  assert.equal(f.state.swarmMode, true);
+});
+
+test('unsupported models and disabled plugins keep the preference without activating Swarm', async () => {
+  const f = fixture();
+  await f.select('swarm');
+  for (const options of [{ max: false }, { enabled: false }]) {
+    const other = fixture(options);
+    await swarmDefaultForNewSession(other.host.harness, other.session);
+    assert.deepEqual(other.calls, []);
+    assert.equal(other.state.swarmMode, false);
+  }
+});
+
+test('new-session restoration rolls back if native Swarm fails', async () => {
+  const f = fixture();
+  await f.select('swarm');
+  const fresh = fixture();
+  fresh.session.setSwarmMode = async () => { throw new Error('native refused'); };
+  await assert.rejects(swarmDefaultForNewSession(fresh.host.harness, fresh.session), /native refused/);
+  assert.equal(fresh.state.thinkingEffort, 'high');
+});
+
+test('session-less startup displays the persisted Swarm before the first prompt', async () => {
+  const f = fixture();
+  await f.select('swarm');
+  const fresh = fixture();
+  fresh.host.session = undefined;
+  await swarmLazyDefaults(fresh.host, await fresh.host.harness.getConfig());
+  assert.equal(swarmDisplayEffort(fresh.host.state.appState), 'swarm');
+  assert.equal(fresh.host.state.appState.lazySessionThinking, 'max');
 });

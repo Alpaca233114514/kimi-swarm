@@ -15,10 +15,14 @@ emphasis when Ultra is available.
 
 ## Moonshot AI Kimi Code
 
-The installer obtains `@moonshot-ai/kimi-code@2.4.1` from the official npm registry.
+The installer obtains an exact version of `@moonshot-ai/kimi-code` matching the
+local original CLI from the official npm registry, with a per-release lockfile.
 `src/patch-bundle.mjs` contains matching excerpts from that package to modify its
 effort pickers, native switching, and status payload. Upstream source:
 https://github.com/MoonshotAI/kimi-code/tree/2c73f3f50af4fa7f2540ca0d2e33b07a1408e3a7
+
+The 2.5.2 adapter also references the official source at:
+https://github.com/MoonshotAI/kimi-code/tree/1c142a007c10e881602690def96057c23a2baa12
 
 The original package, its bundled notices, and an unmodified `main.mjs` backup are
 retained in each managed installation. Kimi Code is licensed under MIT:

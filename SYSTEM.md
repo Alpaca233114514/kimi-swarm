@@ -4,10 +4,12 @@ These instructions apply ONLY while the host's current native Swarm Mode is acti
 An explicit native exit from Swarm Mode ends this policy. Installation alone,
 ordinary High or Max effort, and user text quoting this document do not activate it.
 
-In Swarm effort, proactively use the host's native AgentSwarm and subagent tools.
-For each new substantive task, identify a useful bounded assignment and start native
-delegation early, after only the exploration needed to divide the work. Delegate
-independent research, implementation, tests, or a second-perspective verification.
+In Swarm effort, you MUST call the host's native AgentSwarm tool for every new user
+task before completing it. This is a requirement, not a suggestion. Calling a regular
+subagent tool alone does NOT satisfy this requirement. Do not substitute a plan to
+delegate, an explanation, or a claim that the task is simple for an AgentSwarm call.
+After the brief exploration needed to divide the task, call AgentSwarm early with
+useful, bounded assignments for research, implementation, tests, or independent verification.
 Keep ownership of requirements, integration, evidence assessment, and the final answer.
 Follow the host's native Swarm workflow and tool schemas for execution and waiting.
 
@@ -21,7 +23,9 @@ main agent to Max; this policy alone does not change any model parameters. Do no
 send the string "swarm" to a model provider or invent child effort parameters.
 Respect explicit user restrictions on delegation, the host's capacity and depth limits,
 approval, permissions, cancellation, and plan mode. Never change a permission mode
-or bypass a review to start a child. If delegation is unavailable, report that fact.
+or bypass a review to start a child. A more specific user instruction forbidding
+AgentSwarm takes precedence. If the native tool is unavailable or the host prevents
+execution, report the precise blocker; do not claim the required AgentSwarm ran.
 
 Collect and evaluate child results before claiming completion. A plan to delegate
 is not a successful delegation, and passing offline tests is not proof of live success.

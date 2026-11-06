@@ -1,11 +1,18 @@
 import { spawnSync } from 'node:child_process';
-import { copyFile, cp, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { copyFile, cp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { patchBundle, SUPPORTED_KIMI_VERSION } from './patch-bundle.mjs';
+import { patchBundle, candidateVersion } from './patch-bundle.mjs';
+import { readJson } from './state.mjs';
+export { readJson, writeJson, updatePluginRegistry } from './state.mjs';
 
 export const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+export function validateRuntimeVersion(detected) {
+  if (candidateVersion(detected)) return;
+  throw new Error(`Unsupported Kimi version ${detected}; stable 2.4.1 or later is required.`);
+}
 
 export function run(file, args, options = {}) {
   const result = spawnSync(file, args, { encoding: 'utf8', windowsHide: true, ...options });
@@ -20,29 +27,6 @@ export function npmCli() {
   const found = candidates.find(p => p?.endsWith('npm-cli.js') && existsSync(p));
   if (!found) throw new Error('npm-cli.js was not found. Run the installer using npm run install:cli.');
   return found;
-}
-
-export async function readJson(file, fallback) {
-  try { return JSON.parse(await readFile(file, 'utf8')); }
-  catch (error) { if (error.code === 'ENOENT') return fallback; throw error; }
-}
-
-export async function writeJson(file, value) {
-  await mkdir(dirname(file), { recursive: true });
-  const temp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(temp, JSON.stringify(value, null, 2) + '\n', { flag: 'wx' });
-  await rename(temp, file);
-}
-
-export function updatePluginRegistry(registry, entry) {
-  if (registry.version !== 1 || !Array.isArray(registry.plugins) ||
-      registry.plugins.some(p => !p || typeof p.id !== 'string')) throw new Error('Unrecognized Kimi plugin registry.');
-  const matching = registry.plugins.filter(p => p.id === 'kimi-swarm');
-  if (matching.length > 1) throw new Error('Duplicate kimi-swarm plugin records.');
-  return {
-    previous: matching[0] ?? null,
-    registry: { ...registry, plugins: [...registry.plugins.filter(p => p.id !== 'kimi-swarm'), entry] },
-  };
 }
 
 export async function patchPackage(packageRoot) {
@@ -61,9 +45,9 @@ export async function patchPackage(packageRoot) {
   await mkdir(smokeHome);
   const smokeOptions = { env: { ...process.env, KIMI_CODE_HOME: smokeHome } };
   const version = run(process.execPath, [main, '--version'], smokeOptions);
-  if (version !== SUPPORTED_KIMI_VERSION) throw new Error(`Patched CLI reported unexpected version: ${version}`);
+  if (version !== pkg.version) throw new Error(`Patched CLI reported unexpected version: ${version}`);
   run(process.execPath, [main, '--help'], smokeOptions);
-  return { main, backup, changes: patched.changes };
+  return { main, backup, version, changes: patched.changes };
 }
 
 function batchQuote(value) {
@@ -74,18 +58,42 @@ function batchQuote(value) {
 export async function writeLaunchers(root) {
   const bin = join(root, 'bin');
   await mkdir(bin, { recursive: true });
-  for (const file of ['launcher.mjs', 'kimi.cmd', 'kimi-swarm.cmd']) {
+  for (const file of ['launcher.mjs', 'launch-plan.mjs', 'compatibility.mjs', 'state.mjs', 'kimi.cmd', 'kimi-swarm.cmd']) {
     const target = join(bin, file);
     if (existsSync(target)) await copyFile(target, `${target}.before-${Date.now()}`);
   }
-  await cp(join(projectRoot, 'src', 'launcher.mjs'), join(bin, 'launcher.mjs'));
-  const cmd = `@echo off\r\nrem kimi-swarm managed launcher\r\n${batchQuote(process.execPath)} ${batchQuote(join(bin, 'launcher.mjs'))} %*\r\nexit /b %errorlevel%\r\n`;
-  for (const name of ['kimi', 'kimi-swarm']) await writeFile(join(bin, `${name}.cmd`), cmd);
+  for (const file of ['launcher.mjs', 'launch-plan.mjs', 'compatibility.mjs', 'state.mjs']) await cp(join(projectRoot, 'src', file), join(bin, file));
+  for (const name of ['kimi', 'kimi-swarm']) {
+    const prefix = name === 'kimi-swarm' ? ' --kimi-swarm-entry' : '';
+    const cmd = `@echo off\r\nrem kimi-swarm managed launcher\r\n${batchQuote(process.execPath)} ${batchQuote(join(bin, 'launcher.mjs'))}${prefix} %*\r\nexit /b %errorlevel%\r\n`;
+    await writeFile(join(bin, `${name}.cmd`), cmd);
+  }
   return bin;
 }
 
-export function setWindowsPath(bin, mode) {
-  if (process.platform !== 'win32') throw new Error('Automatic PATH activation currently supports Windows only; use --no-activate.');
-  return run('powershell.exe', ['-NoProfile', '-NonInteractive', '-File',
-    join(projectRoot, 'scripts', 'path.ps1'), '-Bin', bin, '-Mode', mode]);
+export function originalKimiCommand() {
+  const name = process.platform === 'win32' ? 'kimi.exe' : 'kimi';
+  for (const directory of (process.env.PATH ?? '').split(process.platform === 'win32' ? ';' : ':')) {
+    const file = join(directory.replace(/^"(.*)"$/, '$1'), name);
+    if (existsSync(file)) return resolve(file);
+  }
+  throw new Error('Original Kimi executable was not found.');
+}
+
+export async function installManager(release) {
+  const manager = join(release, 'manager');
+  await mkdir(manager);
+  for (const file of ['manager.mjs', 'lifecycle.mjs', 'windows-path.mjs', 'state.mjs']) {
+    await copyFile(join(projectRoot, 'src', file), join(manager, file));
+  }
+  if (process.platform === 'win32') {
+    const windows = process.env.WINDIR ?? 'C:\\Windows';
+    const compiler = ['Framework64', 'Framework'].map(part => join(windows, 'Microsoft.NET', part, 'v4.0.30319', 'csc.exe')).find(existsSync);
+    if (!compiler) throw new Error('Windows .NET Framework compiler is required to prepare the user-PATH helper.');
+    run(compiler, ['/nologo', '/target:exe', '/r:System.Web.Extensions.dll', '/out:' + join(manager, 'windows-path.exe'), join(projectRoot, 'src', 'windows-path.cs')]);
+  }
+  const updater = join(release, 'updater');
+  for (const dir of ['src', 'scripts', 'runtime']) await cp(join(projectRoot, dir), join(updater, dir), { recursive: true });
+  for (const file of ['package.json', 'kimi.plugin.json', 'SYSTEM.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md']) await copyFile(join(projectRoot, file), join(updater, file));
+  return { managerPath: join(manager, 'manager.mjs'), updaterPath: join(updater, 'scripts', 'install.mjs') };
 }

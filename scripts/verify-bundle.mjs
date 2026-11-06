@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import vm from 'node:vm';
-import { patchBundle, SUPPORTED_KIMI_VERSION } from '../src/patch-bundle.mjs';
+import { patchBundle } from '../src/patch-bundle.mjs';
 import { swarmEfforts, swarmDisplayEffort, swarmColor, swarmTintStatusLine, SWARM_DESCRIPTION } from '../src/runtime.mjs';
 
 const packageRoot = resolve(process.argv[2] ?? '.cache/package');
@@ -114,10 +114,11 @@ assert.ok(start >= 0 && end > start);
 vm.runInContext(`class FooterProbe { ${source.slice(start, end)} }; globalThis.FooterProbe = FooterProbe;`, context);
 context.modelDisplayName = state => state.model;
 context.sessionWorkDir = state => state.workDir;
+if (source.includes('function isRemoteEnvironment(')) vm.runInContext(nativeFunction('isRemoteEnvironment'), context);
 const footer = new context.FooterProbe();
 footer.gitCache = { getStatus: () => null };
 footer.state = { ...host.state.appState, swarmMode: true, sessionId: 'test', workDir: '/test',
-  version: SUPPORTED_KIMI_VERSION, permissionMode: 'manual', contextTokens: 100, maxContextTokens: 1000 };
+  version: pkg.version, permissionMode: 'manual', contextTokens: 100, maxContextTokens: 1000 };
 const payload = footer.statusLinePayload();
 assert.equal(payload.thinkingEffort, 'swarm');
 assert.equal(payload.reasoningEffort, 'max');
@@ -150,5 +151,5 @@ if (monitor || monitorModule) {
 await mkdir('.cache/verification', { recursive: true });
 const report = { version: pkg.version, anchors: changes, nativeEffortPicker: true, nativeModelPicker: true, colors: colorChecks,
   nativeStatusPayload: payload, monitor: monitorResult, limitation: 'Controller and renderer verification; no live model task.' };
-await writeFile('.cache/verification/bundle.json', JSON.stringify(report, null, 2) + '\n');
+await writeFile(`.cache/verification/bundle-${pkg.version}.json`, JSON.stringify(report, null, 2) + '\n');
 console.log(JSON.stringify(report, null, 2));
